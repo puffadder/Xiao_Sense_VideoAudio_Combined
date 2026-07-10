@@ -119,18 +119,19 @@ void handleVideAudio(){
 <head><meta charset="UTF-8"><title>ESP32-CAM + Livestream Audio</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body { background-color: #FFF; }
-h1 { text-align: center; }
-video { display: block; margin: 0 auto; }
+body { background:#111; color:#fff; text-align:center; font-family:sans-serif; margin:0; padding:10px; }
+img#vid { max-width:100%; border:1px solid #444; }
+audio { width:100%; max-width:640px; margin-top:8px; }
+h1 { font-size:1.2em; margin:8px 0; }
 </style></head><body>
-<h1>ESP32-CAM + Livestream Audio</h1>
-<iframe id="video" style="width:640px;height:480px;border:0;" allow="camera"></iframe>
+<h1>ESP32-CAM + Livestream</h1>
+<img id="vid" crossorigin="anonymous">
 <br>
-<video controls autoplay width="640" height="60" id="audio"></video>
+<audio id="aud" controls autoplay></audio>
 <script>
-var h = location.hostname;
-document.getElementById('video').src = 'http://' + h + ':81/video';
-document.getElementById('audio').src = 'http://' + h + ':82/audio';
+var h=location.hostname;
+document.getElementById('vid').src='http://'+h+':81/video';
+document.getElementById('aud').src='http://'+h+':82/audio';
 </script>
 </body></html>)DELIM";
 
