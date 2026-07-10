@@ -666,10 +666,11 @@ static esp_err_t index_handler(httpd_req_t *req) {
     return httpd_resp_send_500(req);
   }
 }
-
-void startCameraServer() {
-  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.max_uri_handlers = 16;
+void startCameraServer()
+{
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.max_uri_handlers = 16;
+    config.max_open_sockets = 12;
 
   httpd_uri_t index_uri = {
     .uri = "/",
@@ -831,10 +832,12 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &win_uri);
   }
 
-  config.server_port += 1;
-  config.ctrl_port += 1;
-  log_i("Starting stream server on port: '%d'", config.server_port);
-  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
+  // Fresh config for stream server - httpd_start mutates the struct
+  httpd_config_t streamConfig = HTTPD_DEFAULT_CONFIG();
+  streamConfig.server_port = config.server_port + 1;
+  streamConfig.max_open_sockets = 8;
+  log_i("Starting stream server on port: '%d'", streamConfig.server_port);
+  if (httpd_start(&stream_httpd, &streamConfig) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
   }
 }
