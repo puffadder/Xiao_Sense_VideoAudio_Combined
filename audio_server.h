@@ -34,7 +34,7 @@ void initializeWAVHeader(WAVHeader &header, uint32_t sampleRate, uint16_t bitsPe
   strncpy(header.subchunk1Id, "fmt ", 4);
   strncpy(header.subchunk2Id, "data", 4);
 
-  header.chunkSize = 0; // Placeholder for Chunk Size (to be updated later)
+  header.chunkSize = 0xFFFFFFFF; // Streaming: unknown total size
   header.subchunk1Size = 16; // PCM format size (constant for uncompressed audio)
   header.audioFormat = 1; // PCM audio format (constant for uncompressed audio)
   header.numChannels = numChannels;
@@ -42,36 +42,34 @@ void initializeWAVHeader(WAVHeader &header, uint32_t sampleRate, uint16_t bitsPe
   header.bitsPerSample = bitsPerSample;
   header.byteRate = (sampleRate * bitsPerSample * numChannels) / 8;
   header.blockAlign = (bitsPerSample * numChannels) / 8;
-  header.subchunk2Size = 0; // Placeholder for data size (to be updated later)
+  header.subchunk2Size = 0xFFFFFFFF; // Streaming: unknown data size
 }
 
 void mic_i2s_init() {
 
   i2s_config_t i2sConfig = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
-    .sample_rate = SAMPLE_RATE ,
+    .sample_rate = SAMPLE_RATE,
     .bits_per_sample = i2s_bits_per_sample_t(SAMPLE_BITS),
     .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
     .intr_alloc_flags = 0,
     .dma_buf_count = DMA_BUF_COUNT,
     .dma_buf_len = DMA_BUF_LEN,
-    .use_apll = true
+    .use_apll = false // APLL conflicts with PDM on ESP32S3
   };
   i2s_driver_install(I2S_PORT, &i2sConfig, 0, NULL);
 
   i2s_pin_config_t pinConfig = {
-    .bck_io_num = I2S_SCK, 
-    .ws_io_num = I2S_WS ,
+    .bck_io_num = I2S_PIN_NO_CHANGE, // PDM mode uses internal clock
+    .ws_io_num = I2S_WS,
     .data_out_num = I2S_PIN_NO_CHANGE,
-    .data_in_num = I2S_SD 
+    .data_in_num = I2S_SD
   };
   i2s_set_pin(I2S_PORT, &pinConfig);
 }
 
 void handleAudioStream() {
-
-  mic_i2s_init();
 
   WAVHeader wavHeader;
   initializeWAVHeader(wavHeader, sampleRate, bitsPerSample, numChannels);
@@ -94,7 +92,6 @@ void handleAudioStream() {
 
   while (true) {
     if (!Audioclient.connected()) {
-      //i2s_driver_uninstall(I2S_PORT);
       Serial.println("Audioclient disconnected");
       break;
     }
@@ -118,31 +115,24 @@ void startAudioServer() {
 }
 
 void handleVideAudio(){
-
-  String ip = WiFi.localIP().toString();
-
-  String content = "<!DOCTYPE html><html lang=\"en\">";
-  content += "<head><meta charset=\"UTF-8\">";
-  content += "<title>ESP32-CAM + Livestream Audio</title>";
-  content += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">";
-  content += "<meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">";
-  content += "<style>";
-  content += "body { background-color: #FFF; }";
-  content += ".container1 { display: flex; flex-direction: row; justify-content: center; align-items: center; height: 100%; }";
-  content += ".container2 { display: flex; flex-direction: row; justify-content: center; align-items: center; height: 100%; }";
-  content += ".block { width: 200px; height: 200px; background-color: gray; margin: 10px; display: flex; justify-content: center; align-items: center; }";
-  content += "#video { border: 0; }";
-  content += "#audio { border: 0; }";
-  content += "#tbl { background-color: #000; }";
-  content += "</style></head><body>";
-  content += "<h1>ESP32-CAM + Livestream Audio</h1>";
-  content += "<div class=\"container1\" style=\"overflow-x:auto;\">";
-  content += "<table id=\"tbl\" style=\"overflow-x:auto;\"><tr>";
-  content += "<td><iframe id=\"video\" src=\"http://" + ip + ":81/stream\" allow=\"camera\" width=\"640\" height=\"480\"></iframe></td>";
-  content += "</tr><tr>";
-  content += "<td><video controls autoplay width=\"640\" height=\"60\" id=\"audio\"><source src=\"http://" + ip + ":82/audio\" type=\"audio/wav\"></video></td>";
-  content += "</tr></table></div>";
-  content += "</body></html>";
+  String content = R"DELIM(<!DOCTYPE html><html lang="en">
+<head><meta charset="UTF-8"><title>ESP32-CAM + Livestream Audio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body { background-color: #FFF; }
+h1 { text-align: center; }
+video { display: block; margin: 0 auto; }
+</style></head><body>
+<h1>ESP32-CAM + Livestream Audio</h1>
+<iframe id="video" style="width:640px;height:480px;border:0;" allow="camera"></iframe>
+<br>
+<video controls autoplay width="640" height="60" id="audio"></video>
+<script>
+var h = location.hostname;
+document.getElementById('video').src = 'http://' + h + ':81/video';
+document.getElementById('audio').src = 'http://' + h + ':82/audio';
+</script>
+</body></html>)DELIM";
 
   VideoAudioServer.send(200, "text/html", content);
 

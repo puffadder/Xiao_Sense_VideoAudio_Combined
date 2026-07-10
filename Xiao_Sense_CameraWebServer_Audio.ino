@@ -36,12 +36,13 @@
 // ===========================
 // Enter your WiFi credentials
 // ===========================
-const char* ssid = "SSID";
-const char* password = "password";
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
 
 void startCameraServer();
 
 #if defined(HAS_MICROPHONE)
+void mic_i2s_init();
 void startAudioServer();
 void startVideoAudioServer();
 #endif
@@ -157,6 +158,10 @@ void setup() {
   startVideoAudioServer();
 #endif
 
+#if defined(HAS_MICROPHONE)
+  mic_i2s_init();
+#endif
+
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(WiFi.localIP());
   Serial.println("' to connect");
@@ -170,5 +175,5 @@ void loop() {
     VideoAudioServer.handleClient();
   #endif
 
-  delay(1000);
+  delay(10);
 }
