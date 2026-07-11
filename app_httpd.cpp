@@ -11,6 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+#include <WiFi.h>
+
+#ifndef CAMERA_MODEL_XIAO_ESP32S3
+#define CAMERA_MODEL_XIAO_ESP32S3
+#endif
+
+#include "camera_pins.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "esp_camera.h"
@@ -94,8 +102,6 @@ void enable_led(bool en) {  // Turn LED On or Off
     duty = CONFIG_LED_MAX_INTENSITY;
   }
   ledcWrite(LED_GPIO_NUM, duty);
-  //ledc_set_duty(CONFIG_LED_LEDC_SPEED_MODE, CONFIG_LED_LEDC_CHANNEL, duty);
-  //ledc_update_duty(CONFIG_LED_LEDC_SPEED_MODE, CONFIG_LED_LEDC_CHANNEL);
   log_i("Set LED intensity to %d", duty);
 }
 #endif
@@ -160,8 +166,8 @@ static esp_err_t capture_handler(httpd_req_t *req) {
 
 #if defined(LED_GPIO_NUM)
   enable_led(true);
-  vTaskDelay(150 / portTICK_PERIOD_MS);  // The LED needs to be turned on ~150ms before the call to esp_camera_fb_get()
-  fb = esp_camera_fb_get();              // or it won't be visible in the frame. A better way to do this is needed.
+  vTaskDelay(150 / portTICK_PERIOD_MS);
+  fb = esp_camera_fb_get();
   enable_led(false);
 #else
   fb = esp_camera_fb_get();
@@ -211,7 +217,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   esp_err_t res = ESP_OK;
   size_t _jpg_buf_len = 0;
   uint8_t *_jpg_buf = NULL;
-  char *part_buf[128];
+  char part_buf[128];
 
   static int64_t last_frame = 0;
   if (!last_frame) {
@@ -256,8 +262,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
       res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
     }
     if (res == ESP_OK) {
-      size_t hlen = snprintf((char *)part_buf, 128, _STREAM_PART, _jpg_buf_len, _timestamp.tv_sec, _timestamp.tv_usec);
-      res = httpd_resp_send_chunk(req, (const char *)part_buf, hlen);
+      size_t hlen = snprintf(part_buf, 128, _STREAM_PART, _jpg_buf_len, _timestamp.tv_sec, _timestamp.tv_usec);
+      res = httpd_resp_send_chunk(req, part_buf, hlen);
     }
     if (res == ESP_OK) {
       res = httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len);
@@ -284,8 +290,9 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     uint32_t avg_frame_time = ra_filter_run(&ra_filter, frame_time);
 #endif
     log_i(
-      "MJPG: %uB %ums (%.1ffps), AVG: %ums (%.1ffps)", (uint32_t)(_jpg_buf_len), (uint32_t)frame_time, 1000.0 / (uint32_t)frame_time, avg_frame_time,
-      1000.0 / avg_frame_time
+      "MJPG: %uB %ums (%.1ffps), AVG: %ums (%.1ffps)",
+      (uint32_t)(_jpg_buf_len), (uint32_t)frame_time, 1000.0 / (uint32_t)frame_time,
+      avg_frame_time, 1000.0 / avg_frame_time
     );
   }
 
@@ -326,7 +333,8 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
   if (parse_get(req, &buf) != ESP_OK) {
     return ESP_FAIL;
   }
-  if (httpd_query_key_value(buf, "var", variable, sizeof(variable)) != ESP_OK || httpd_query_key_value(buf, "val", value, sizeof(value)) != ESP_OK) {
+  if (httpd_query_key_value(buf, "var", variable, sizeof(variable)) != ESP_OK ||
+      httpd_query_key_value(buf, "val", value, sizeof(value)) != ESP_OK) {
     free(buf);
     httpd_resp_send_404(req);
     return ESP_FAIL;
@@ -423,27 +431,23 @@ static esp_err_t status_handler(httpd_req_t *req) {
 
   if (s->id.PID == OV5640_PID || s->id.PID == OV3660_PID) {
     for (int reg = 0x3400; reg < 0x3406; reg += 2) {
-      p += print_reg(p, s, reg, 0xFFF);  //12 bit
+      p += print_reg(p, s, reg, 0xFFF);
     }
     p += print_reg(p, s, 0x3406, 0xFF);
-
-    p += print_reg(p, s, 0x3500, 0xFFFF0);  //16 bit
+    p += print_reg(p, s, 0x3500, 0xFFFF0);
     p += print_reg(p, s, 0x3503, 0xFF);
-    p += print_reg(p, s, 0x350a, 0x3FF);   //10 bit
-    p += print_reg(p, s, 0x350c, 0xFFFF);  //16 bit
-
+    p += print_reg(p, s, 0x350a, 0x3FF);
+    p += print_reg(p, s, 0x350c, 0xFFFF);
     for (int reg = 0x5480; reg <= 0x5490; reg++) {
       p += print_reg(p, s, reg, 0xFF);
     }
-
     for (int reg = 0x5380; reg <= 0x538b; reg++) {
       p += print_reg(p, s, reg, 0xFF);
     }
-
     for (int reg = 0x5580; reg < 0x558a; reg++) {
       p += print_reg(p, s, reg, 0xFF);
     }
-    p += print_reg(p, s, 0x558a, 0x1FF);  //9 bit
+    p += print_reg(p, s, 0x558a, 0x1FF);
   } else if (s->id.PID == OV2640_PID) {
     p += print_reg(p, s, 0xd3, 0xFF);
     p += print_reg(p, s, 0x111, 0xFF);
@@ -525,8 +529,9 @@ static esp_err_t reg_handler(httpd_req_t *req) {
   if (parse_get(req, &buf) != ESP_OK) {
     return ESP_FAIL;
   }
-  if (httpd_query_key_value(buf, "reg", _reg, sizeof(_reg)) != ESP_OK || httpd_query_key_value(buf, "mask", _mask, sizeof(_mask)) != ESP_OK
-      || httpd_query_key_value(buf, "val", _val, sizeof(_val)) != ESP_OK) {
+  if (httpd_query_key_value(buf, "reg", _reg, sizeof(_reg)) != ESP_OK ||
+      httpd_query_key_value(buf, "mask", _mask, sizeof(_mask)) != ESP_OK ||
+      httpd_query_key_value(buf, "val", _val, sizeof(_val)) != ESP_OK) {
     free(buf);
     httpd_resp_send_404(req);
     return ESP_FAIL;
@@ -556,7 +561,8 @@ static esp_err_t greg_handler(httpd_req_t *req) {
   if (parse_get(req, &buf) != ESP_OK) {
     return ESP_FAIL;
   }
-  if (httpd_query_key_value(buf, "reg", _reg, sizeof(_reg)) != ESP_OK || httpd_query_key_value(buf, "mask", _mask, sizeof(_mask)) != ESP_OK) {
+  if (httpd_query_key_value(buf, "reg", _reg, sizeof(_reg)) != ESP_OK ||
+      httpd_query_key_value(buf, "mask", _mask, sizeof(_mask)) != ESP_OK) {
     free(buf);
     httpd_resp_send_404(req);
     return ESP_FAIL;
@@ -603,7 +609,8 @@ static esp_err_t pll_handler(httpd_req_t *req) {
   int pclk = parse_get_var(buf, "pclk", 0);
   free(buf);
 
-  log_i("Set Pll: bypass: %d, mul: %d, sys: %d, root: %d, pre: %d, seld5: %d, pclken: %d, pclk: %d", bypass, mul, sys, root, pre, seld5, pclken, pclk);
+  log_i("Set Pll: bypass: %d, mul: %d, sys: %d, root: %d, pre: %d, seld5: %d, pclken: %d, pclk: %d",
+        bypass, mul, sys, root, pre, seld5, pclken, pclk);
   sensor_t *s = esp_camera_sensor_get();
   int res = s->set_pll(s, bypass, mul, sys, root, pre, seld5, pclken, pclk);
   if (res) {
@@ -628,19 +635,17 @@ static esp_err_t win_handler(httpd_req_t *req) {
   int offsetX = parse_get_var(buf, "offx", 0);
   int offsetY = parse_get_var(buf, "offy", 0);
   int totalX = parse_get_var(buf, "tx", 0);
-  int totalY = parse_get_var(buf, "ty", 0);  // codespell:ignore totaly
+  int totalY = parse_get_var(buf, "ty", 0);
   int outputX = parse_get_var(buf, "ox", 0);
   int outputY = parse_get_var(buf, "oy", 0);
   bool scale = parse_get_var(buf, "scale", 0) == 1;
   bool binning = parse_get_var(buf, "binning", 0) == 1;
   free(buf);
 
-  log_i(
-    "Set Window: Start: %d %d, End: %d %d, Offset: %d %d, Total: %d %d, Output: %d %d, Scale: %u, Binning: %u", startX, startY, endX, endY, offsetX, offsetY,
-    totalX, totalY, outputX, outputY, scale, binning  // codespell:ignore totaly
-  );
+  log_i("Set Window: Start: %d %d, End: %d %d, Offset: %d %d, Total: %d %d, Output: %d %d, Scale: %u, Binning: %u",
+        startX, startY, endX, endY, offsetX, offsetY, totalX, totalY, outputX, outputY, scale, binning);
   sensor_t *s = esp_camera_sensor_get();
-  int res = s->set_res_raw(s, startX, startY, endX, endY, offsetX, offsetY, totalX, totalY, outputX, outputY, scale, binning);  // codespell:ignore totaly
+  int res = s->set_res_raw(s, startX, startY, endX, endY, offsetX, offsetY, totalX, totalY, outputX, outputY, scale, binning);
   if (res) {
     return httpd_resp_send_500(req);
   }
@@ -649,6 +654,9 @@ static esp_err_t win_handler(httpd_req_t *req) {
   return httpd_resp_send(req, NULL, 0);
 }
 
+// Redirect / to /combined — stock camera UI disabled (control/resolution is locked)
+// Uncomment below and comment out redirect_handler to re-enable the stock camera UI
+/*
 static esp_err_t index_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
@@ -666,178 +674,211 @@ static esp_err_t index_handler(httpd_req_t *req) {
     return httpd_resp_send_500(req);
   }
 }
-void startCameraServer()
-{
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 16;
-    config.max_open_sockets = 12;
+*/
+
+static esp_err_t redirect_handler(httpd_req_t *req) {
+  httpd_resp_set_status(req, "302 Found");
+  httpd_resp_set_hdr(req, "Location", "/combined");
+  httpd_resp_send(req, NULL, 0);
+  return ESP_OK;
+}
+
+esp_err_t combined_page_handler(httpd_req_t *req) {
+  char ip[16];
+  snprintf(ip, sizeof(ip), "%d.%d.%d.%d",
+    (WiFi.localIP()[0] & 0xFF), (WiFi.localIP()[1] & 0xFF),
+    (WiFi.localIP()[2] & 0xFF), (WiFi.localIP()[3] & 0xFF));
+
+  char page[1024];
+  snprintf(page, sizeof(page),
+    "<!DOCTYPE html><html lang='en'>"
+    "<head><meta charset='UTF-8'><title>XIAO ESP32S3 - Live Stream</title>"
+    "<style>"
+    "body{background:#111;color:#fff;text-align:center;font-family:sans-serif;margin:0;padding:10px;}"
+    "#vid{max-width:100%%;border:1px solid #444;}"
+    "audio{width:100%%;max-width:640px;margin-top:8px;}"
+    "h1{font-size:1.2em;margin:8px 0;}"
+    "</style></head><body>"
+    "<h1>XIAO ESP32S3 - Live Stream</h1>"
+    "<iframe id='vid' src='http://%s:81/stream' allow='camera' width='640' height='480'></iframe>"
+    "<br><audio controls autoplay preload='none'><source src='http://%s:82/audio' type='audio/wav'></audio>"
+    "</body></html>", ip, ip);
+
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, page, strlen(page));
+}
+
+void startCameraServer() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.max_uri_handlers = 16;
+  config.max_open_sockets = 8;
 
   httpd_uri_t index_uri = {
-    .uri = "/",
-    .method = HTTP_GET,
-    .handler = index_handler,
-    .user_ctx = NULL
+    .uri        = "/",
+    .method     = HTTP_GET,
+    .handler    = redirect_handler,
+    .user_ctx   = NULL
 #ifdef CONFIG_HTTPD_WS_SUPPORT
-    ,
-    .is_websocket = true,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = NULL
-#endif
-  };
-
-  httpd_uri_t status_uri = {
-    .uri = "/status",
-    .method = HTTP_GET,
-    .handler = status_handler,
-    .user_ctx = NULL
-#ifdef CONFIG_HTTPD_WS_SUPPORT
-    ,
-    .is_websocket = true,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = NULL
-#endif
-  };
-
-  httpd_uri_t cmd_uri = {
-    .uri = "/control",
-    .method = HTTP_GET,
-    .handler = cmd_handler,
-    .user_ctx = NULL
-#ifdef CONFIG_HTTPD_WS_SUPPORT
-    ,
-    .is_websocket = true,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = NULL
-#endif
-  };
-
-  httpd_uri_t capture_uri = {
-    .uri = "/capture",
-    .method = HTTP_GET,
-    .handler = capture_handler,
-    .user_ctx = NULL
-#ifdef CONFIG_HTTPD_WS_SUPPORT
-    ,
-    .is_websocket = true,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = NULL
+    ,.is_websocket           = true
+    ,.handle_ws_control_frames = false
+    ,.supported_subprotocol  = NULL
 #endif
   };
 
   httpd_uri_t stream_uri = {
-    .uri = "/stream",
-    .method = HTTP_GET,
-    .handler = stream_handler,
-    .user_ctx = NULL
+    .uri        = "/stream",
+    .method     = HTTP_GET,
+    .handler    = stream_handler,
+    .user_ctx   = NULL
 #ifdef CONFIG_HTTPD_WS_SUPPORT
-    ,
-    .is_websocket = true,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = NULL
+    ,.is_websocket           = true
+    ,.handle_ws_control_frames = false
+    ,.supported_subprotocol  = NULL
+#endif
+  };
+
+  httpd_uri_t combined_uri = {
+    .uri        = "/combined",
+    .method     = HTTP_GET,
+    .handler    = combined_page_handler,
+    .user_ctx   = NULL
+  };
+
+  // Stock camera UI control endpoints — disabled (resolution locked to 640x480)
+  // Uncomment below + change index_uri.handler to index_handler to re-enable
+  /*
+  httpd_uri_t status_uri = {
+    .uri        = "/status",
+    .method     = HTTP_GET,
+    .handler    = status_handler,
+    .user_ctx   = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,.is_websocket           = true
+    ,.handle_ws_control_frames = false
+    ,.supported_subprotocol  = NULL
+#endif
+  };
+
+  httpd_uri_t cmd_uri = {
+    .uri        = "/control",
+    .method     = HTTP_GET,
+    .handler    = cmd_handler,
+    .user_ctx   = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,.is_websocket           = true
+    ,.handle_ws_control_frames = false
+    ,.supported_subprotocol  = NULL
+#endif
+  };
+
+  httpd_uri_t capture_uri = {
+    .uri        = "/capture",
+    .method     = HTTP_GET,
+    .handler    = capture_handler,
+    .user_ctx   = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,.is_websocket           = true
+    ,.handle_ws_control_frames = false
+    ,.supported_subprotocol  = NULL
 #endif
   };
 
   httpd_uri_t bmp_uri = {
-    .uri = "/bmp",
-    .method = HTTP_GET,
-    .handler = bmp_handler,
-    .user_ctx = NULL
+    .uri        = "/bmp",
+    .method     = HTTP_GET,
+    .handler    = bmp_handler,
+    .user_ctx   = NULL
 #ifdef CONFIG_HTTPD_WS_SUPPORT
-    ,
-    .is_websocket = true,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = NULL
+    ,.is_websocket           = true
+    ,.handle_ws_control_frames = false
+    ,.supported_subprotocol  = NULL
 #endif
   };
 
   httpd_uri_t xclk_uri = {
-    .uri = "/xclk",
-    .method = HTTP_GET,
-    .handler = xclk_handler,
-    .user_ctx = NULL
+    .uri        = "/xclk",
+    .method     = HTTP_GET,
+    .handler    = xclk_handler,
+    .user_ctx   = NULL
 #ifdef CONFIG_HTTPD_WS_SUPPORT
-    ,
-    .is_websocket = true,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = NULL
+    ,.is_websocket           = true
+    ,.handle_ws_control_frames = false
+    ,.supported_subprotocol  = NULL
 #endif
   };
 
   httpd_uri_t reg_uri = {
-    .uri = "/reg",
-    .method = HTTP_GET,
-    .handler = reg_handler,
-    .user_ctx = NULL
+    .uri        = "/reg",
+    .method     = HTTP_GET,
+    .handler    = reg_handler,
+    .user_ctx   = NULL
 #ifdef CONFIG_HTTPD_WS_SUPPORT
-    ,
-    .is_websocket = true,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = NULL
+    ,.is_websocket           = true
+    ,.handle_ws_control_frames = false
+    ,.supported_subprotocol  = NULL
 #endif
   };
 
   httpd_uri_t greg_uri = {
-    .uri = "/greg",
-    .method = HTTP_GET,
-    .handler = greg_handler,
-    .user_ctx = NULL
+    .uri        = "/greg",
+    .method     = HTTP_GET,
+    .handler    = greg_handler,
+    .user_ctx   = NULL
 #ifdef CONFIG_HTTPD_WS_SUPPORT
-    ,
-    .is_websocket = true,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = NULL
+    ,.is_websocket           = true
+    ,.handle_ws_control_frames = false
+    ,.supported_subprotocol  = NULL
 #endif
   };
 
   httpd_uri_t pll_uri = {
-    .uri = "/pll",
-    .method = HTTP_GET,
-    .handler = pll_handler,
-    .user_ctx = NULL
+    .uri        = "/pll",
+    .method     = HTTP_GET,
+    .handler    = pll_handler,
+    .user_ctx   = NULL
 #ifdef CONFIG_HTTPD_WS_SUPPORT
-    ,
-    .is_websocket = true,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = NULL
+    ,.is_websocket           = true
+    ,.handle_ws_control_frames = false
+    ,.supported_subprotocol  = NULL
 #endif
   };
 
   httpd_uri_t win_uri = {
-    .uri = "/resolution",
-    .method = HTTP_GET,
-    .handler = win_handler,
-    .user_ctx = NULL
+    .uri        = "/resolution",
+    .method     = HTTP_GET,
+    .handler    = win_handler,
+    .user_ctx   = NULL
 #ifdef CONFIG_HTTPD_WS_SUPPORT
-    ,
-    .is_websocket = true,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = NULL
+    ,.is_websocket           = true
+    ,.handle_ws_control_frames = false
+    ,.supported_subprotocol  = NULL
 #endif
   };
+  */
 
   ra_filter_init(&ra_filter, 20);
 
-  log_i("Starting web server on port: '%d'", config.server_port);
+  log_i("Starting camera web server on port: '%d'", config.server_port);
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
-    httpd_register_uri_handler(camera_httpd, &cmd_uri);
-    httpd_register_uri_handler(camera_httpd, &status_uri);
-    httpd_register_uri_handler(camera_httpd, &capture_uri);
-    httpd_register_uri_handler(camera_httpd, &bmp_uri);
-
-    httpd_register_uri_handler(camera_httpd, &xclk_uri);
-    httpd_register_uri_handler(camera_httpd, &reg_uri);
-    httpd_register_uri_handler(camera_httpd, &greg_uri);
-    httpd_register_uri_handler(camera_httpd, &pll_uri);
-    httpd_register_uri_handler(camera_httpd, &win_uri);
+    httpd_register_uri_handler(camera_httpd, &combined_uri);
+    // httpd_register_uri_handler(camera_httpd, &cmd_uri);
+    // httpd_register_uri_handler(camera_httpd, &status_uri);
+    // httpd_register_uri_handler(camera_httpd, &capture_uri);
+    // httpd_register_uri_handler(camera_httpd, &bmp_uri);
+    // httpd_register_uri_handler(camera_httpd, &xclk_uri);
+    // httpd_register_uri_handler(camera_httpd, &reg_uri);
+    // httpd_register_uri_handler(camera_httpd, &greg_uri);
+    // httpd_register_uri_handler(camera_httpd, &pll_uri);
+    // httpd_register_uri_handler(camera_httpd, &win_uri);
   }
 
-  // Fresh config for stream server - httpd_start mutates the struct
-  httpd_config_t streamConfig = HTTPD_DEFAULT_CONFIG();
-  streamConfig.server_port = config.server_port + 1;
-  streamConfig.max_open_sockets = 8;
-  log_i("Starting stream server on port: '%d'", streamConfig.server_port);
-  if (httpd_start(&stream_httpd, &streamConfig) == ESP_OK) {
+  // Stream server on port 81 (HTML page hardcodes :81 for /stream)
+  config.server_port += 1;
+  config.ctrl_port += 1;
+  log_i("Starting stream server on port: '%d'", config.server_port);
+  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
   }
 }
