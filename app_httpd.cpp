@@ -694,15 +694,20 @@ esp_err_t combined_page_handler(httpd_req_t *req) {
     "<!DOCTYPE html><html lang='en'>"
     "<head><meta charset='UTF-8'><title>XIAO ESP32S3 - Live Stream</title>"
     "<style>"
-    "body{background:#111;color:#fff;text-align:center;font-family:sans-serif;margin:0;padding:10px;}"
-    "#vid{max-width:100%%;border:1px solid #444;}"
-    "audio{width:100%%;max-width:640px;margin-top:8px;}"
-    "h1{font-size:1.2em;margin:8px 0;}"
+    "html,body{width:100%%;min-height:100%%;margin:0;padding:0;background:#111;color:#fff;overflow:hidden;}"
+    "#app{display:flex;flex-direction:column;align-items:center;width:100%%;min-height:100%%;}"
+    "h1{font-size:clamp(0.9em,3vw,1.4em);margin:4px 0;color:#fff;}"
+    "#vid{width:100%%;max-height:calc(100vh - 80px);object-fit:contain;background:#000;}"
+    ".audio-wrap{width:95%%;max-width:640px;margin:4px 0;flex-shrink:0;display:flex;justify-content:center;padding:20px 0;}"
+    ".audio-wrap audio{width:100%%;}"
+    "@media(orientation:portrait){.audio-wrap audio{transform:scale(1.4);transform-origin:center center;}}"
+    "@media(orientation:landscape){html,body{overflow:auto;}}"
     "</style></head><body>"
+    "<div id='app'>"
     "<h1>XIAO ESP32S3 - Live Stream</h1>"
-    "<iframe id='vid' src='http://%s:81/stream' allow='camera' width='640' height='480'></iframe>"
-    "<br><audio controls autoplay preload='none'><source src='http://%s:82/audio' type='audio/wav'></audio>"
-    "</body></html>", ip, ip);
+    "<img id='vid' src='http://%s:81/stream'>"
+    "<div class='audio-wrap'><audio controls autoplay preload='none'><source src='http://%s:82/audio' type='audio/wav'></audio></div>"
+    "</div></body></html>", ip, ip);
 
   httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
