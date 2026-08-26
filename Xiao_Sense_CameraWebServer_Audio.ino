@@ -134,5 +134,16 @@ void loop() {
 #if defined(HAS_MICROPHONE)
   AudioServer.handleClient();
 #endif
+
+  // WiFi reconnection
+  static uint32_t last_wifi_check = 0;
+  if (millis() - last_wifi_check > 10000) { // check every 10s
+    last_wifi_check = millis();
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("WiFi lost, reconnecting...");
+      WiFi.reconnect();
+    }
+  }
+
   delay(10);
 }

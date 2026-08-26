@@ -238,6 +238,12 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 #endif
 
   while (true) {
+    // Check WiFi connectivity
+    if (WiFi.status() != WL_CONNECTED) {
+      log_e("WiFi disconnected, stopping stream");
+      break;
+    }
+
     fb = esp_camera_fb_get();
     if (!fb) {
       log_e("Camera capture failed");
