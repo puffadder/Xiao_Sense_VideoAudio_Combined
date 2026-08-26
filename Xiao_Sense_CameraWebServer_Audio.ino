@@ -114,14 +114,14 @@ void setup() {
 
   // STA mode status indicator - blink 5x then OFF (don't disturb baby)
 #if defined(LED_GPIO_NUM)
-  pinMode(LED_GPIO_NUM, OUTPUT);
+  ledcAttach(LED_GPIO_NUM, 5000, 8);
   for (int i = 0; i < 5; i++) {
-    digitalWrite(LED_GPIO_NUM, HIGH);
+    ledcWrite(LED_GPIO_NUM, 255);
     delay(50);
-    digitalWrite(LED_GPIO_NUM, LOW);
+    ledcWrite(LED_GPIO_NUM, 0);
     delay(50);
   }
-  digitalWrite(LED_GPIO_NUM, LOW); // OFF after blink
+  ledcWrite(LED_GPIO_NUM, 0); // OFF after blink
 #endif
 
 #if defined(HAS_MICROPHONE)
