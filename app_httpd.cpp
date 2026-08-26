@@ -98,11 +98,9 @@ static int ra_filter_run(ra_filter_t *filter, int value) {
 #if defined(LED_GPIO_NUM)
 void enable_led(bool en) {  // Turn LED On or Off
   int duty = en ? led_duty : 0;
-  if (en && isStreaming && (led_duty > CONFIG_LED_MAX_INTENSITY)) {
-    duty = CONFIG_LED_MAX_INTENSITY;
-  }
-  ledcWrite(LED_GPIO_NUM, duty);
-  log_i("Set LED intensity to %d", duty);
+  // Disable flash LED to avoid conflict with mode indicator LED
+  // ledcWrite(LED_GPIO_NUM, duty);
+  // log_i("Set LED intensity to %d", duty);
 }
 #endif
 
@@ -238,10 +236,14 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 #endif
 
   while (true) {
-    // Check WiFi connectivity
-    if (WiFi.status() != WL_CONNECTED) {
-      log_e("WiFi disconnected, stopping stream");
+    // Check connectivity based on WiFi mode
+    wifi_mode_t mode = WiFi.getMode();
+    if ((mode == WIFI_STA || mode == WIFI_AP_STA) && WiFi.status() != WL_CONNECTED) {
+      Serial.println("STA WiFi disconnected, stopping stream");
       break;
+    }
+    if ((mode == WIFI_AP || mode == WIFI_AP_STA) && WiFi.softAPgetStationNum() == 0) {
+      // Optional: stop if no clients connected to AP
     }
 
     fb = esp_camera_fb_get();
@@ -704,9 +706,11 @@ static const char* framesize_to_str(framesize_t fs) {
 
 esp_err_t combined_page_handler(httpd_req_t *req) {
   char ip[16];
+  IPAddress ipAddr = (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) 
+    ? WiFi.softAPIP() : WiFi.localIP();
   snprintf(ip, sizeof(ip), "%d.%d.%d.%d",
-    (WiFi.localIP()[0] & 0xFF), (WiFi.localIP()[1] & 0xFF),
-    (WiFi.localIP()[2] & 0xFF), (WiFi.localIP()[3] & 0xFF));
+    (ipAddr[0] & 0xFF), (ipAddr[1] & 0xFF),
+    (ipAddr[2] & 0xFF), (ipAddr[3] & 0xFF));
 
   sensor_t *s = esp_camera_sensor_get();
   const char *res_str = "Unknown";

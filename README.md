@@ -28,6 +28,22 @@ Built on the Arduino framework with ESP-IDF HTTP server and a custom responsive 
 
 ## Quick Start
 
+### WiFi Mode Selection (v2.0+)
+
+The device supports **two WiFi modes** stored in non-volatile memory (NVS):
+
+| Mode | Behavior | SSID | Password | IP |
+|---|---|---|---|---|
+| **STA (Station)** | Connects to your router | Your WiFi | Your WiFi password | Router-assigned |
+| **AP (Access Point)** | Creates its own network | `XIAO-CAM` | `12345678` | `192.168.4.1` |
+
+**To toggle mode:** Press and hold the **BOOT button (GPIO 0)** for **200 ms – 2 s** (press + release). The LED blinks **15 times**, then the device restarts in the new mode. The selected mode persists across power cycles.
+
+**Boot LED patterns:**
+- **5 blinks** = STA mode ready (IP displayed on Serial Monitor)
+- **10 blinks** = AP mode ready (IP: 192.168.4.1)
+- **15 blinks** = Mode changed, restarting
+
 ### 1. Arduino IDE Setup
 
 1. Install **ESP32 board support** via Arduino Boards Manager (search `esp32`).

@@ -217,6 +217,9 @@
 #define HREF_GPIO_NUM  47
 #define PCLK_GPIO_NUM  13
 
+// Onboard Amber User LED on XIAO ESP32S3 is GPIO 21 (active low: LOW=ON)
+#define LED_GPIO_NUM 21
+
 //Microphone
 #define HAS_MICROPHONE
 #define I2S_WS            42

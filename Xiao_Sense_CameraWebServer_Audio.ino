@@ -1,5 +1,6 @@
 #include "esp_camera.h"
 #include <WiFi.h>
+#include <Preferences.h>
 
 // ===================
 // Select camera model
@@ -28,10 +29,101 @@ void startVideoAudioServer();
 
 void setupLedFlash();
 
+// WiFi mode: 0 = STA (router), 1 = AP (XIAO-CAM)
+enum WiFiMode { MODE_STA = 0, MODE_AP = 1 };
+WiFiMode currentMode;
+
+Preferences prefs;
+
+void setLed(bool on) {
+#if defined(LED_GPIO_NUM)
+  digitalWrite(LED_GPIO_NUM, on ? LOW : HIGH); // Active low: LOW=ON
+#endif
+}
+
+void blinkLed(int times, int delayMs = 500) {
+#if defined(LED_GPIO_NUM)
+  Serial.printf("Blinking LED %d times...\n", times);
+  // Detach from PWM if previously attached
+  ledcDetach(LED_GPIO_NUM);
+  pinMode(LED_GPIO_NUM, OUTPUT);
+  for (int i = 0; i < times; i++) {
+    setLed(true);
+    delay(delayMs);
+    setLed(false);
+    delay(delayMs);
+  }
+#endif
+}
+
+void initPrefs() {
+  prefs.begin("wifi_config", true); // read-only
+  currentMode = (WiFiMode)prefs.getUChar("mode", MODE_STA);
+  prefs.end();
+  Serial.printf("WiFi mode from NVS: %s\n", currentMode == MODE_STA ? "STA" : "AP");
+}
+
+void startSTAMode() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  WiFi.setSleep(false);
+  
+  Serial.print("Connecting to ");
+  Serial.print(ssid);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi connected (STA)");
+  Serial.print("IP: http://");
+  Serial.println(WiFi.localIP());
+  
+  // Blink after IP is known - ready for client connection
+  blinkLed(5); // 5 blinks = STA ready
+  setLed(false);
+}
+
+void startAPMode() {
+  WiFi.mode(WIFI_AP);
+  const char *ap_ssid = "XIAO-CAM";
+  const char *ap_password = "12345678"; // min 8 chars
+  bool apStarted = WiFi.softAP(ap_ssid, ap_password);
+  WiFi.setSleep(false);
+
+  delay(500);
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.println("");
+  Serial.print("AP Started: ");
+  Serial.println(apStarted ? "YES" : "FAILED");
+  Serial.print("SSID: ");
+  Serial.println(ap_ssid);
+  Serial.print("IP: http://");
+  Serial.println(apIP);
+  Serial.print("MAC: ");
+  Serial.println(WiFi.softAPmacAddress());
+  
+  // Blink after AP is ready - ready for client connection
+  blinkLed(10); // 10 blinks = AP ready
+  setLed(false);
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println();
+
+  // Init LED early for status
+#if defined(LED_GPIO_NUM)
+  pinMode(LED_GPIO_NUM, OUTPUT);
+  setLed(false); // OFF initially
+#endif
+
+  // Boot button (GPIO 0) for mode toggle
+  pinMode(0, INPUT_PULLUP);
+
+  // Read mode from NVS
+  initPrefs();
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -54,30 +146,25 @@ void setup() {
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.frame_size = psram_framesize;
-  config.pixel_format = PIXFORMAT_JPEG; // for streaming
+  config.pixel_format = PIXFORMAT_JPEG;
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   config.jpeg_quality = 12;
   config.fb_count = 1;
 
-  // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
-  //                      for larger pre-allocated frame buffer.
   if(config.pixel_format == PIXFORMAT_JPEG){
     if(psramFound()){
       config.jpeg_quality = 12;
       config.fb_count = 2;
       config.grab_mode = CAMERA_GRAB_LATEST;
     } else {
-      // Limit the frame size when PSRAM is not available
       config.frame_size = no_psram_framesize;
       config.fb_location = CAMERA_FB_IN_DRAM;
     }
   } else {
-    // Non-JPEG streaming
     config.frame_size = no_jpeg_framesize;
   }
 
-  // camera init
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
     Serial.printf("Camera init failed with error 0x%x", err);
@@ -85,77 +172,83 @@ void setup() {
   }
 
   sensor_t * s = esp_camera_sensor_get();
-  // initial sensors are flipped vertically and colors are a bit saturated
   if (s->id.PID == OV3660_PID) {
-    s->set_vflip(s, 1); // flip it back
-    s->set_brightness(s, 1); // up the brightness just a bit
-    s->set_saturation(s, -2); // lower the saturation
+    s->set_vflip(s, 1);
+    s->set_brightness(s, 1);
+    s->set_saturation(s, -2);
   }
-
-  // Use configured framesize (psram_framesize / no_psram_framesize)
   if(config.pixel_format == PIXFORMAT_JPEG){
     s->set_framesize(s, config.frame_size);
   }
 
-// Setup LED Flash if LED pin is defined in camera_pins.h
 #if defined(LED_GPIO_NUM)
   setupLedFlash();
 #endif
 
-  WiFi.begin(ssid, password);
-  WiFi.setSleep(false);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  // Start WiFi based on mode
+  if (currentMode == MODE_STA) {
+    startSTAMode(); // blinks 5x after IP
+  } else {
+    startAPMode();  // blinks 10x after AP ready
   }
-  Serial.println("");
-  Serial.println("WiFi connected");
-
-  // STA mode status indicator - blink 5x then OFF (don't disturb baby)
-#if defined(LED_GPIO_NUM)
-  ledcAttach(LED_GPIO_NUM, 5000, 8);
-  for (int i = 0; i < 5; i++) {
-    ledcWrite(LED_GPIO_NUM, 255);
-    delay(50);
-    ledcWrite(LED_GPIO_NUM, 0);
-    delay(50);
-  }
-  ledcWrite(LED_GPIO_NUM, 0); // OFF after blink
-#endif
+  setLed(false); // OFF after blink
 
 #if defined(HAS_MICROPHONE)
-  // Init mic AFTER WiFi connects to avoid APLL conflict
   mic_i2s_init();
 #endif
 
-  // Start servers: camera on 80, stream on 81, audio on 82, combined page on 83
   startCameraServer();
 
 #if defined(HAS_MICROPHONE)
   startAudioServer();
 #endif
 
+  IPAddress ip = (currentMode == MODE_STA) ? WiFi.localIP() : WiFi.softAPIP();
   Serial.print("Camera Ready! Use 'http://");
-  Serial.print(WiFi.localIP());
+  Serial.print(ip);
   Serial.println("/combined' for video+audio");
 }
-
 
 void loop() {
 #if defined(HAS_MICROPHONE)
   AudioServer.handleClient();
 #endif
 
-  // WiFi reconnection
-  static uint32_t last_wifi_check = 0;
-  if (millis() - last_wifi_check > 10000) { // check every 10s
-    last_wifi_check = millis();
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("WiFi lost, reconnecting...");
-      WiFi.reconnect();
+  // STA mode: check WiFi and reconnect
+  if (currentMode == MODE_STA) {
+    static uint32_t last_wifi_check = 0;
+    if (millis() - last_wifi_check > 10000) {
+      last_wifi_check = millis();
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi lost, reconnecting...");
+        WiFi.reconnect();
+      }
     }
   }
+  // AP mode: nothing needed
+
+    // Boot button (GPIO 0) to toggle WiFi mode
+  static bool lastButton = HIGH;
+  static uint32_t pressStart = 0;
+  bool button = digitalRead(0); // GPIO 0 = Boot button (active LOW)
+  
+  if (button == LOW && lastButton == HIGH) {
+    // Button just pressed - start timing
+    pressStart = millis();
+  } else if (button == HIGH && lastButton == LOW) {
+    // Button released - check hold duration
+    uint32_t holdTime = millis() - pressStart;
+    if (holdTime > 200 && holdTime < 2000) { // 200ms-2s = mode toggle
+      WiFiMode newMode = (currentMode == MODE_STA) ? MODE_AP : MODE_STA;
+      prefs.begin("wifi_config", false);
+      prefs.putUChar("mode", newMode);
+      prefs.end();
+      Serial.printf("Mode toggled to %s, restarting\n", newMode == MODE_STA ? "STA" : "AP");
+      blinkLed(15); // 15 blinks = mode changed
+      ESP.restart();
+    }
+  }
+  lastButton = button;
 
   delay(10);
 }
