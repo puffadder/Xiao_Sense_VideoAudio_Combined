@@ -112,6 +112,18 @@ void setup() {
   Serial.println("");
   Serial.println("WiFi connected");
 
+  // STA mode status indicator - blink 5x then OFF (don't disturb baby)
+#if defined(LED_GPIO_NUM)
+  pinMode(LED_GPIO_NUM, OUTPUT);
+  for (int i = 0; i < 5; i++) {
+    digitalWrite(LED_GPIO_NUM, HIGH);
+    delay(50);
+    digitalWrite(LED_GPIO_NUM, LOW);
+    delay(50);
+  }
+  digitalWrite(LED_GPIO_NUM, LOW); // OFF after blink
+#endif
+
 #if defined(HAS_MICROPHONE)
   // Init mic AFTER WiFi connects to avoid APLL conflict
   mic_i2s_init();
