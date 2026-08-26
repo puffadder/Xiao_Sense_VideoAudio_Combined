@@ -683,13 +683,32 @@ static esp_err_t redirect_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static const char* framesize_to_str(framesize_t fs) {
+  switch (fs) {
+    case FRAMESIZE_QQVGA: return "160x120 (QQVGA)";
+    case FRAMESIZE_QVGA:  return "320x240 (QVGA)";
+    case FRAMESIZE_VGA:   return "640x480 (VGA)";
+    case FRAMESIZE_SVGA:  return "800x600 (SVGA)";
+    case FRAMESIZE_XGA:   return "1024x768 (XGA)";
+    case FRAMESIZE_SXGA:  return "1280x1024 (SXGA)";
+    case FRAMESIZE_UXGA:  return "1600x1200 (UXGA)";
+    default: return "Unknown";
+  }
+}
+
 esp_err_t combined_page_handler(httpd_req_t *req) {
   char ip[16];
   snprintf(ip, sizeof(ip), "%d.%d.%d.%d",
     (WiFi.localIP()[0] & 0xFF), (WiFi.localIP()[1] & 0xFF),
     (WiFi.localIP()[2] & 0xFF), (WiFi.localIP()[3] & 0xFF));
 
-  char page[1024];
+  sensor_t *s = esp_camera_sensor_get();
+  const char *res_str = "Unknown";
+  if (s) {
+    res_str = framesize_to_str(s->status.framesize);
+  }
+
+  static char page[4096];
   snprintf(page, sizeof(page),
     "<!DOCTYPE html><html lang='en'>"
     "<head><meta charset='UTF-8'><title>XIAO ESP32S3 - Live Stream</title>"
@@ -697,17 +716,83 @@ esp_err_t combined_page_handler(httpd_req_t *req) {
     "html,body{width:100%%;min-height:100%%;margin:0;padding:0;background:#111;color:#fff;overflow:hidden;}"
     "#app{display:flex;flex-direction:column;align-items:center;width:100%%;min-height:100%%;}"
     "h1{font-size:clamp(0.9em,3vw,1.4em);margin:4px 0;color:#fff;}"
-    "#vid{width:100%%;max-height:calc(100vh - 80px);object-fit:contain;background:#000;}"
-    ".audio-wrap{width:95%%;max-width:640px;margin:4px 0;flex-shrink:0;display:flex;justify-content:center;padding:20px 0;}"
+    ".res{font-size:0.75em;color:#888;margin:-2px 0 6px 0;}"
+    "#vid-wrap{max-width:640px;width:100%%;}"
+    "#vid{width:100%%;height:auto;object-fit:contain;background:#000;}"
+    ".reconnect-overlay{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);color:#fff;font-size:1.2em;z-index:10;pointer-events:none;}"
+    ".reconnect-overlay.hidden{display:none;}"
+    ".audio-wrap{width:95%%;max-width:640px;margin:4px 0;flex-shrink:0;display:flex;justify-content:center;padding:20px 0;position:relative;}"
     ".audio-wrap audio{width:100%%;}"
+    ".audio-wrap .reconnect-overlay{font-size:0.9em;}"
     "@media(orientation:portrait){.audio-wrap audio{transform:scale(1.4);transform-origin:center center;}}"
     "@media(orientation:landscape){html,body{overflow:auto;}}"
     "</style></head><body>"
     "<div id='app'>"
     "<h1>XIAO ESP32S3 - Live Stream</h1>"
-    "<img id='vid' src='http://%s:81/stream'>"
-    "<div class='audio-wrap'><audio controls autoplay preload='none'><source src='http://%s:82/audio' type='audio/wav'></audio></div>"
-    "</div></body></html>", ip, ip);
+    "<div class='res'>Streaming: %s</div>"
+    "<div id='vid-wrap' style='position:relative;'>"
+    "  <img id='vid' src='' style='background:#000;'>"
+    "  <div id='vid-reconnect' class='reconnect-overlay hidden'>Reconnecting video...</div>"
+    "</div>"
+    "<div class='audio-wrap'>"
+    "  <audio id='audio' controls preload='none'></audio>"
+    "  <div id='audio-reconnect' class='reconnect-overlay hidden'>Reconnecting audio...</div>"
+    "</div>"
+    "</div>"
+    "<script>"
+    "const VIDEO_URL='http://%s:81/stream';"
+    "const AUDIO_URL='http://%s:82/audio';"
+    "let vidRetry=0, audRetry=0;"
+    "const MAX_RETRY=30000;"
+    "function schedule(fn, ms){return setTimeout(fn, ms);}"
+    "function clear(fn){clearTimeout(fn);}"
+    "function show(el){el.classList.remove('hidden');}"
+    "function hide(el){el.classList.add('hidden');}"
+    "function reconnectVideo(){"
+    "  const img=document.getElementById('vid');"
+    "  const overlay=document.getElementById('vid-reconnect');"
+    "  img.onerror=null; img.onload=null;"
+    "  img.src='';"
+    "  show(overlay);"
+    "  const tryLoad=()=>{"
+    "    img.src=VIDEO_URL+'?t='+Date.now();"
+    "    img.onload=()=>{vidRetry=0;hide(overlay);};"
+    "    img.onerror=()=>{"
+    "      const delay=Math.min(1000*Math.pow(2,vidRetry),MAX_RETRY);"
+    "      vidRetry++;"
+    "      schedule(tryLoad,delay);"
+    "    };"
+    "  };"
+    "  tryLoad();"
+    "}"
+    "function reconnectAudio(){"
+    "  const audio=document.getElementById('audio');"
+    "  const overlay=document.getElementById('audio-reconnect');"
+    "  audio.onerror=null; audio.onended=null;"
+    "  audio.pause(); audio.src='';"
+    "  show(overlay);"
+    "  const tryLoad=()=>{"
+    "    audio.src=AUDIO_URL+'?t='+Date.now();"
+    "    audio.load();"
+    "    audio.play().catch(()=>{});"
+    "    audio.oncanplay=()=>{audRetry=0;hide(overlay);};"
+    "    audio.onerror=()=>{"
+    "      const delay=Math.min(1000*Math.pow(2,audRetry),MAX_RETRY);"
+    "      audRetry++;"
+    "      schedule(tryLoad,delay);"
+    "    };"
+    "    audio.onended=()=>{schedule(tryLoad,1000);};"
+    "  };"
+    "  tryLoad();"
+    "}"
+    "document.addEventListener('visibilitychange',()=>{"
+    "  if(!document.hidden){reconnectVideo();reconnectAudio();}"
+    "});"
+    "window.addEventListener('online',()=>{reconnectVideo();reconnectAudio();});"
+    "reconnectVideo();"
+    "reconnectAudio();"
+    "</script>"
+    "</body></html>", res_str, ip, ip, ip, ip);
 
   httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");

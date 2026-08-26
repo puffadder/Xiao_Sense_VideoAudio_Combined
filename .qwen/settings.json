@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/bhargav/arduino_work/CameraWebServer/**)",
+      "Bash(diff *)",
+      "Bash(strings *)",
+      "Bash(python3 *)",
+      "Bash(curl *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(ls *)",
+      "Bash(which *)",
+      "Read(//home/bhargav/**)"
+    ]
+  },
+  "$version": 4
+}

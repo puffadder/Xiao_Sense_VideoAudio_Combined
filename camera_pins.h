@@ -227,8 +227,8 @@
 
 #define SAMPLE_RATE       22050
 #define SAMPLE_BITS       16
-#define DMA_BUF_COUNT     2
-#define DMA_BUF_LEN       1024
+#define DMA_BUF_COUNT     4
+#define DMA_BUF_LEN       512
 
 #elif defined(CAMERA_MODEL_ESP32_CAM_BOARD)
 // The 18 pin header on the board has Y5 and Y3 swapped

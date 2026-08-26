@@ -14,6 +14,10 @@
 const char* ssid = "YOUR_WIFI_SSID";
 const char* password = "YOUR_WIFI_PASSWORD";
 
+framesize_t psram_framesize = FRAMESIZE_QVGA;
+framesize_t no_psram_framesize = FRAMESIZE_QVGA;
+framesize_t no_jpeg_framesize = FRAMESIZE_QVGA;
+
 void startCameraServer();
 
 #if defined(HAS_MICROPHONE)
@@ -49,7 +53,7 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
-  config.frame_size = FRAMESIZE_UXGA;
+  config.frame_size = psram_framesize;
   config.pixel_format = PIXFORMAT_JPEG; // for streaming
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
@@ -60,17 +64,17 @@ void setup() {
   //                      for larger pre-allocated frame buffer.
   if(config.pixel_format == PIXFORMAT_JPEG){
     if(psramFound()){
-      config.jpeg_quality = 10;
+      config.jpeg_quality = 12;
       config.fb_count = 2;
       config.grab_mode = CAMERA_GRAB_LATEST;
     } else {
       // Limit the frame size when PSRAM is not available
-      config.frame_size = FRAMESIZE_SVGA;
+      config.frame_size = no_psram_framesize;
       config.fb_location = CAMERA_FB_IN_DRAM;
     }
   } else {
     // Non-JPEG streaming
-    config.frame_size = FRAMESIZE_QVGA;
+    config.frame_size = no_jpeg_framesize;
   }
 
   // camera init
@@ -87,9 +91,10 @@ void setup() {
     s->set_brightness(s, 1); // up the brightness just a bit
     s->set_saturation(s, -2); // lower the saturation
   }
-  // Hardcode to 640x480 (VGA) — matches /combined page iframe size
+
+  // Use configured framesize (psram_framesize / no_psram_framesize)
   if(config.pixel_format == PIXFORMAT_JPEG){
-    s->set_framesize(s, FRAMESIZE_VGA);
+    s->set_framesize(s, config.frame_size);
   }
 
 // Setup LED Flash if LED pin is defined in camera_pins.h

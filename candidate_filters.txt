@@ -1,0 +1,30 @@
+void applyAudioFilters(int16_t *buffer, size_t samples) {
+    static float dc_estimate = 0;
+    const float alpha = 0.999; // Time constant for DC tracking
+    
+    for (size_t i = 0; i < samples; i++) {
+        // --- STAGE 1: DC Removal Filter ---
+        // Wi-Fi spikes push the microphone base voltage up/down. This centers it.
+        dc_estimate = (alpha * dc_estimate) + ((1.0 - alpha) * buffer[i]);
+        float corrected_sample = buffer[i] - dc_estimate;
+
+        // --- STAGE 2: Software Noise Gate ---
+        // If the audio is quiet, completely mute the background Wi-Fi hiss.
+        if (abs(corrected_sample) < 250) { // Adjust threshold (0-32767) to taste
+            corrected_sample = 0;
+        }
+
+        // --- STAGE 3: Pre-Emphasis (Boosts human voice clarity) ---
+        // This makes your voice louder relative to the low-mid radio buzz.
+        static float prev_sample = 0;
+        float final_sample = corrected_sample - (0.85 * prev_sample);
+        prev_sample = corrected_sample;
+
+        // Clamp values to prevent digital clipping distortion
+        if (final_sample > 32767) final_sample = 32767;
+        if (final_sample < -32768) final_sample = -32768;
+
+        buffer[i] = (int16_t)final_sample;
+    }
+}
+
