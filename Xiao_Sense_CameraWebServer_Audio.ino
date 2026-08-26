@@ -110,8 +110,9 @@ void startAPMode() {
 
 void setup() {
   Serial.begin(115200);
-  Serial.setDebugOutput(true);
-  Serial.println();
+  // Don't block waiting for Serial connection
+  // Serial.setDebugOutput(true); // Can block if USB not connected
+  delay(100); // Brief delay for Serial to stabilize if connected
 
   // Init LED early for status
 #if defined(LED_GPIO_NUM)
