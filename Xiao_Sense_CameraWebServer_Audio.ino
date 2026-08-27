@@ -79,8 +79,6 @@ void startSTAMode() {
   Serial.print("IP: http://");
   Serial.println(WiFi.localIP());
   
-  // Blink after IP is known - ready for client connection
-  blinkLed(5); // 5 blinks = STA ready
   setLed(false);
 }
 
@@ -103,8 +101,6 @@ void startAPMode() {
   Serial.print("MAC: ");
   Serial.println(WiFi.softAPmacAddress());
   
-  // Blink after AP is ready - ready for client connection
-  blinkLed(10); // 10 blinks = AP ready
   setLed(false);
 }
 
@@ -208,6 +204,10 @@ void setup() {
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(ip);
   Serial.println("/combined' for video+audio");
+  
+  // Blink after everything ready - camera, WiFi, mic, servers all started
+  blinkLed(currentMode == MODE_STA ? 5 : 10);
+  setLed(false);
 }
 
 void loop() {
