@@ -10,16 +10,24 @@
 #include "audio_server.h"
 
 // ===========================
-// Enter your WiFi credentials
+// WiFi credentials
 // ===========================
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
+// Credentials are NOT stored in code. Configure via web UI:
+//   - STA mode: http://<device-ip>/wifi
+//   - AP mode (first boot / fallback): http://192.168.4.1/wifi
+// Persisted in NVS namespace "wifi_config" (keys: ssid, pass, ap_ssid, ap_pass).
+String staSsid, staPass;   // Station: your router
+String apSsid, apPass;     // Access Point: the device's own hotspot
+bool staActive = false;
+int lastFailStatus = -1;
 
 framesize_t psram_framesize = FRAMESIZE_QVGA;
 framesize_t no_psram_framesize = FRAMESIZE_QVGA;
 framesize_t no_jpeg_framesize = FRAMESIZE_QVGA;
 
 void startCameraServer();
+void startSTAMode();
+void startAPMode();
 
 #if defined(HAS_MICROPHONE)
 void mic_i2s_init();
@@ -32,6 +40,25 @@ void setupLedFlash();
 // WiFi mode: 0 = STA (router), 1 = AP (XIAO-CAM)
 enum WiFiMode { MODE_STA = 0, MODE_AP = 1 };
 WiFiMode currentMode;
+
+// Video quality settings (persisted in NVS)
+extern const framesize_t vidResList[] = {
+  FRAMESIZE_QQVGA,   // 160x120   - index 0
+  FRAMESIZE_HQVGA,   // 240x176   - index 1
+  FRAMESIZE_QVGA,    // 320x240   - index 2 (default)
+  FRAMESIZE_CIF,     // 400x296   - index 3
+  FRAMESIZE_VGA,     // 640x480   - index 4
+  FRAMESIZE_SVGA,    // 800x600   - index 5 (max)
+};
+extern const int VID_RES_COUNT = sizeof(vidResList) / sizeof(vidResList[0]);
+extern const int VID_RES_DEFAULT = 2; // QVGA
+int currentVidResIdx = VID_RES_DEFAULT;
+
+// Audio quality settings (persisted in NVS)
+extern const int AUD_GAIN_MIN = 1;
+extern const int AUD_GAIN_MAX = 8;
+extern const int AUD_GAIN_DEFAULT = 4;
+int currentAudGain = AUD_GAIN_DEFAULT;
 
 Preferences prefs;
 
@@ -59,34 +86,66 @@ void blinkLed(int times, int delayMs = 500) {
 void initPrefs() {
   prefs.begin("wifi_config", true); // read-only
   currentMode = (WiFiMode)prefs.getUChar("mode", MODE_STA);
+  uint8_t savedRes = prefs.getUChar("vid_res", VID_RES_DEFAULT);
+  if (savedRes < VID_RES_COUNT) currentVidResIdx = savedRes;
+  uint8_t savedGain = prefs.getUChar("aud_gain", AUD_GAIN_DEFAULT);
+  if (savedGain >= AUD_GAIN_MIN && savedGain <= AUD_GAIN_MAX) currentAudGain = savedGain;
+  staSsid = prefs.getString("ssid", "");
+  staPass = prefs.getString("pass", "");
+  apSsid = prefs.getString("ap_ssid", "XIAO-CAM");
+  apPass = prefs.getString("ap_pass", "12345678");
   prefs.end();
   Serial.printf("WiFi mode from NVS: %s\n", currentMode == MODE_STA ? "STA" : "AP");
+  Serial.printf("Video res idx %d, audio gain x%d\n", currentVidResIdx, currentAudGain);
 }
 
 void startSTAMode() {
+  staActive = false;
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.begin(staSsid.c_str(), staPass.c_str());
   WiFi.setSleep(false);
-  
+
   Serial.print("Connecting to ");
-  Serial.print(ssid);
-  while (WiFi.status() != WL_CONNECTED) {
+  Serial.print(staSsid);
+  uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
     delay(500);
     Serial.print(".");
   }
   Serial.println("");
+  if (WiFi.status() != WL_CONNECTED) {
+    lastFailStatus = WiFi.status();
+    Serial.printf("STA connect failed (20s), status=%d - falling back to AP mode\n", WiFi.status());
+    Serial.printf("Attempted SSID: '%s' (len %d), pass len %d\n",
+      staSsid.c_str(), staSsid.length(), staPass.length());
+    int n = WiFi.scanNetworks();
+    bool found = false;
+    for (int i = 0; i < n; i++) {
+      if (WiFi.SSID(i) == staSsid) {
+        Serial.printf("SSID visible in scan: ch=%d rssi=%d auth=%d\n",
+          WiFi.channel(i), WiFi.RSSI(i), WiFi.encryptionType(i));
+        found = true;
+      }
+    }
+    if (!found) {
+      Serial.printf("SSID '%s' NOT visible in scan (2.4GHz only; check name/band)\n", staSsid.c_str());
+    }
+    WiFi.scanDelete();
+    Serial.println("Reconfigure at http://192.168.4.1/wifi");
+    startAPMode();
+    return;
+  }
   Serial.println("WiFi connected (STA)");
   Serial.print("IP: http://");
   Serial.println(WiFi.localIP());
-  
+  staActive = true;
+
   setLed(false);
 }
 
 void startAPMode() {
   WiFi.mode(WIFI_AP);
-  const char *ap_ssid = "XIAO-CAM";
-  const char *ap_password = "12345678"; // min 8 chars
-  bool apStarted = WiFi.softAP(ap_ssid, ap_password);
+  bool apStarted = WiFi.softAP(apSsid.c_str(), apPass.c_str());
   WiFi.setSleep(false);
 
   delay(500);
@@ -95,12 +154,12 @@ void startAPMode() {
   Serial.print("AP Started: ");
   Serial.println(apStarted ? "YES" : "FAILED");
   Serial.print("SSID: ");
-  Serial.println(ap_ssid);
+  Serial.println(apSsid);
   Serial.print("IP: http://");
   Serial.println(apIP);
   Serial.print("MAC: ");
   Serial.println(WiFi.softAPmacAddress());
-  
+
   setLed(false);
 }
 
@@ -142,7 +201,7 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
-  config.frame_size = psram_framesize;
+  config.frame_size = vidResList[currentVidResIdx];
   config.pixel_format = PIXFORMAT_JPEG;
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
@@ -155,7 +214,7 @@ void setup() {
       config.fb_count = 2;
       config.grab_mode = CAMERA_GRAB_LATEST;
     } else {
-      config.frame_size = no_psram_framesize;
+      config.frame_size = vidResList[currentVidResIdx];
       config.fb_location = CAMERA_FB_IN_DRAM;
     }
   } else {
@@ -175,7 +234,7 @@ void setup() {
     s->set_saturation(s, -2);
   }
   if(config.pixel_format == PIXFORMAT_JPEG){
-    s->set_framesize(s, config.frame_size);
+    s->set_framesize(s, vidResList[currentVidResIdx]);
   }
 
 #if defined(LED_GPIO_NUM)
@@ -184,7 +243,13 @@ void setup() {
 
   // Start WiFi based on mode
   if (currentMode == MODE_STA) {
-    startSTAMode(); // blinks 5x after IP
+    if (staSsid.length() > 0) {
+      startSTAMode(); // 20s timeout, AP fallback on failure
+    } else {
+      Serial.println("No WiFi credentials configured - starting AP mode");
+      Serial.println("Connect to XIAO-CAM, then open http://192.168.4.1/wifi");
+      startAPMode();
+    }
   } else {
     startAPMode();  // blinks 10x after AP ready
   }
@@ -200,13 +265,18 @@ void setup() {
   startAudioServer();
 #endif
 
-  IPAddress ip = (currentMode == MODE_STA) ? WiFi.localIP() : WiFi.softAPIP();
+  IPAddress ip = (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA)
+    ? WiFi.softAPIP() : WiFi.localIP();
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(ip);
   Serial.println("/combined' for video+audio");
-  
+  if (currentMode == MODE_STA && !staActive) {
+    Serial.printf("[wifi-diag] SSID='%s' (len %d) passLen=%d status=%d - not connected\n",
+      staSsid.c_str(), staSsid.length(), staPass.length(), lastFailStatus);
+  }
+
   // Blink after everything ready - camera, WiFi, mic, servers all started
-  blinkLed(currentMode == MODE_STA ? 5 : 10);
+  blinkLed((currentMode == MODE_STA && staActive) ? 5 : 10);
   setLed(false);
 }
 
@@ -216,7 +286,7 @@ void loop() {
 #endif
 
   // STA mode: check WiFi and reconnect
-  if (currentMode == MODE_STA) {
+  if (currentMode == MODE_STA && staActive) {
     static uint32_t last_wifi_check = 0;
     if (millis() - last_wifi_check > 10000) {
       last_wifi_check = millis();

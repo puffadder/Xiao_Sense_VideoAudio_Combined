@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <WiFi.h>
+#include <Preferences.h>
 
 #ifndef CAMERA_MODEL_XIAO_ESP32S3
 #define CAMERA_MODEL_XIAO_ESP32S3
@@ -54,6 +55,18 @@ static const char *_STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %
 
 httpd_handle_t stream_httpd = NULL;
 httpd_handle_t camera_httpd = NULL;
+
+// Extern quality config from main sketch
+extern int currentVidResIdx;
+extern int currentAudGain;
+extern const framesize_t vidResList[];
+extern const int VID_RES_COUNT;
+extern const int AUD_GAIN_MIN;
+extern const int AUD_GAIN_MAX;
+extern String staSsid;
+extern String staPass;
+extern String apSsid;
+extern String apPass;
 
 typedef struct {
   size_t size;   //number of values used for filtering
@@ -235,6 +248,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   enable_led(true);
 #endif
 
+  int noFb = 0;
+
   while (true) {
     // Check connectivity based on WiFi mode
     wifi_mode_t mode = WiFi.getMode();
@@ -249,22 +264,29 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     fb = esp_camera_fb_get();
     if (!fb) {
       log_e("Camera capture failed");
-      res = ESP_FAIL;
-    } else {
-      _timestamp.tv_sec = fb->timestamp.tv_sec;
-      _timestamp.tv_usec = fb->timestamp.tv_usec;
-      if (fb->format != PIXFORMAT_JPEG) {
-        bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
-        esp_camera_fb_return(fb);
-        fb = NULL;
-        if (!jpeg_converted) {
-          log_e("JPEG compression failed");
-          res = ESP_FAIL;
-        }
-      } else {
-        _jpg_buf_len = fb->len;
-        _jpg_buf = fb->buf;
+      // Frame-size switches can transiently starve the driver; hold the
+      // connection open instead of tearing down the whole MJPEG stream.
+      if (++noFb > 100) {
+        Serial.println("Stream ending: camera not producing frames");
+        break;
       }
+      vTaskDelay(10 / portTICK_PERIOD_MS);
+      continue;
+    }
+    noFb = 0;
+    _timestamp.tv_sec = fb->timestamp.tv_sec;
+    _timestamp.tv_usec = fb->timestamp.tv_usec;
+    if (fb->format != PIXFORMAT_JPEG) {
+      bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
+      esp_camera_fb_return(fb);
+      fb = NULL;
+      if (!jpeg_converted) {
+        log_e("JPEG compression failed");
+        res = ESP_FAIL;
+      }
+    } else {
+      _jpg_buf_len = fb->len;
+      _jpg_buf = fb->buf;
     }
     if (res == ESP_OK) {
       res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
@@ -693,15 +715,319 @@ static esp_err_t redirect_handler(httpd_req_t *req) {
 
 static const char* framesize_to_str(framesize_t fs) {
   switch (fs) {
-    case FRAMESIZE_QQVGA: return "160x120 (QQVGA)";
-    case FRAMESIZE_QVGA:  return "320x240 (QVGA)";
-    case FRAMESIZE_VGA:   return "640x480 (VGA)";
-    case FRAMESIZE_SVGA:  return "800x600 (SVGA)";
-    case FRAMESIZE_XGA:   return "1024x768 (XGA)";
-    case FRAMESIZE_SXGA:  return "1280x1024 (SXGA)";
-    case FRAMESIZE_UXGA:  return "1600x1200 (UXGA)";
+    case FRAMESIZE_QQVGA:  return "160x120 (QQVGA)";
+    case FRAMESIZE_HQVGA:  return "240x176 (HQVGA)";
+    case FRAMESIZE_QVGA:   return "320x240 (QVGA)";
+    case FRAMESIZE_CIF:    return "400x296 (CIF)";
+    case FRAMESIZE_VGA:    return "640x480 (VGA)";
+    case FRAMESIZE_SVGA:   return "800x600 (SVGA)";
     default: return "Unknown";
   }
+}
+
+// Quality config handlers
+static esp_err_t quality_get_handler(httpd_req_t *req) {
+  // Get current video resolution string
+  const char* vid_label = framesize_to_str(vidResList[currentVidResIdx]);
+  char aud_label[16];
+  snprintf(aud_label, sizeof(aud_label), "x%d", currentAudGain);
+  
+  char json[256];
+  snprintf(json, sizeof(json),
+    "{\"vid_idx\":%d,\"vid_label\":\"%s\",\"aud_gain\":%d,\"aud_label\":\"%s\"}",
+    currentVidResIdx, vid_label, currentAudGain, aud_label);
+  
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, json, strlen(json));
+}
+
+static esp_err_t quality_vid_handler(httpd_req_t *req) {
+  char buf[64];
+  int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+  if (ret <= 0) {
+    Serial.printf("quality_vid: recv failed ret=%d\n", ret);
+    return ESP_FAIL;
+  }
+  buf[ret] = '\x00';
+  Serial.printf("quality_vid: received body: %s\n", buf);
+
+  // Parse JSON for "dir": "up" or "down"
+  int new_idx = currentVidResIdx;
+  if (strstr(buf, "\"dir\":\"up\"") || strstr(buf, "\"dir\": \"up\"")) {
+    if (currentVidResIdx < VID_RES_COUNT - 1) new_idx = currentVidResIdx + 1;
+  } else if (strstr(buf, "\"dir\":\"down\"") || strstr(buf, "\"dir\": \"down\"")) {
+    if (currentVidResIdx > 0) new_idx = currentVidResIdx - 1;
+  }
+  Serial.printf("quality_vid: currentIdx=%d newIdx=%d\n", currentVidResIdx, new_idx);
+
+  if (new_idx != currentVidResIdx) {
+    currentVidResIdx = new_idx;
+    sensor_t *s = esp_camera_sensor_get();
+    s->set_framesize(s, (framesize_t)vidResList[currentVidResIdx]);
+    Preferences prefs;
+    prefs.begin("wifi_config", false);
+    prefs.putUChar("vid_res", new_idx);
+    prefs.end();
+    Serial.printf("Video res applied live: idx %d (%s)\n",
+      currentVidResIdx, framesize_to_str(vidResList[currentVidResIdx]));
+  }
+
+  char json[128];
+  snprintf(json, sizeof(json),
+    "{\"status\":\"ok\",\"vid_idx\":%d,\"vid_label\":\"%s\"}",
+    currentVidResIdx, framesize_to_str(vidResList[currentVidResIdx]));
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_send(req, json, strlen(json));
+  return ESP_OK;
+}
+static esp_err_t quality_aud_handler(httpd_req_t *req) {
+  char buf[64];
+  int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+  if (ret <= 0) {
+    Serial.printf("quality_aud: recv failed ret=%d\n", ret);
+    return ESP_FAIL;
+  }
+  buf[ret] = '\x00';
+  Serial.printf("quality_aud: received body: %s\n", buf);
+
+  // Parse JSON for "gain": N or "dir": "up"/"down"
+  int new_gain = currentAudGain;
+  char* gain_str = strstr(buf, "\"gain\":");
+  if (gain_str) {
+    int gain = atoi(gain_str + 7);
+    if (gain >= AUD_GAIN_MIN && gain <= AUD_GAIN_MAX) {
+      new_gain = gain;
+    }
+  } else if (strstr(buf, "\"dir\":\"up\"") || strstr(buf, "\"dir\": \"up\"")) {
+    if (currentAudGain < AUD_GAIN_MAX) new_gain = currentAudGain + 1;
+  } else if (strstr(buf, "\"dir\":\"down\"") || strstr(buf, "\"dir\": \"down\"")) {
+    if (currentAudGain > AUD_GAIN_MIN) new_gain = currentAudGain - 1;
+  }
+  Serial.printf("quality_aud: currentGain=%d newGain=%d\n", currentAudGain, new_gain);
+
+  if (new_gain != currentAudGain) {
+    currentAudGain = new_gain;
+    // Save to NVS (apply immediately, no restart needed)
+    Preferences prefs;
+    prefs.begin("wifi_config", false);
+    prefs.putUChar("aud_gain", new_gain);
+    prefs.end();
+    Serial.printf("Audio gain changed to %d\n", new_gain);
+  }
+
+  char json[64];
+  snprintf(json, sizeof(json), "{\"status\":\"ok\",\"gain\":%d}", currentAudGain);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_send(req, json, strlen(json));
+  return ESP_OK;
+}
+
+// WiFi credential configuration (GET/POST /wifi, form-urlencoded)
+static int hexVal(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+static void urlDecode(char *s) {
+  char *o = s;
+  while (*s) {
+    if (*s == '+') { *o++ = ' '; s++; }
+    else if (*s == '%' && hexVal(s[1]) >= 0 && hexVal(s[2]) >= 0) {
+      *o++ = (char)((hexVal(s[1]) << 4) | hexVal(s[2]));
+      s += 3;
+    } else {
+      *o++ = *s++;
+    }
+  }
+  *o = '\0';
+}
+
+// Extract key=value from a form-urlencoded body. Requires the key to start at
+// the body or right after '&' so "pass" cannot match inside "ap_pass".
+static bool getFormValue(const char *body, const char *key, char *out, size_t outLen) {
+  size_t klen = strlen(key);
+  const char *p = body;
+  while ((p = strstr(p, key)) != NULL) {
+    if ((p == body || p[-1] == '&') && p[klen] == '=') {
+      p += klen + 1;
+      const char *e = strchr(p, '&');
+      size_t n = e ? (size_t)(e - p) : strlen(p);
+      if (n >= outLen) n = outLen - 1;
+      memcpy(out, p, n);
+      out[n] = '\0';
+      urlDecode(out);
+      return true;
+    }
+    p += 1;
+  }
+  return false;
+}
+
+static void htmlEscape(const char *in, char *out, size_t outLen) {
+  size_t o = 0;
+  for (size_t i = 0; in[i] && o + 7 < outLen; i++) {
+    char c = in[i];
+    if (c == '&') { memcpy(out + o, "&amp;", 5); o += 5; }
+    else if (c == '<') { memcpy(out + o, "&lt;", 4); o += 4; }
+    else if (c == '>') { memcpy(out + o, "&gt;", 4); o += 4; }
+    else if (c == '"') { memcpy(out + o, "&quot;", 6); o += 6; }
+    else if (c == '\'') { memcpy(out + o, "&#39;", 5); o += 5; }
+    else out[o++] = c;
+  }
+  out[o] = '\0';
+}
+
+static esp_err_t wifi_page_handler(httpd_req_t *req) {
+  char ip[16];
+  bool apActive = (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA);
+  IPAddress ipAddr = apActive ? WiFi.softAPIP() : WiFi.localIP();
+  snprintf(ip, sizeof(ip), "%d.%d.%d.%d",
+    (ipAddr[0] & 0xFF), (ipAddr[1] & 0xFF),
+    (ipAddr[2] & 0xFF), (ipAddr[3] & 0xFF));
+
+  char ssidEsc[197];
+  htmlEscape(staSsid.c_str(), ssidEsc, sizeof(ssidEsc));
+  char apSsidEsc[197];
+  htmlEscape(apSsid.c_str(), apSsidEsc, sizeof(apSsidEsc));
+  const char* staPassHint = staPass.length() > 0
+    ? "Password (leave blank to keep current)"
+    : "Password (required, 8-63 chars)";
+
+  static char page[2048];
+  int len = snprintf(page, sizeof(page),
+    "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>XIAO WiFi Setup</title><style>"
+    "body{font-family:sans-serif;background:#111;color:#fff;display:flex;justify-content:center;padding-top:6vh;margin:0;}"
+    "form{background:rgba(255,255,255,0.06);padding:24px;border-radius:12px;width:90%%;max-width:360px;}"
+    "h2{margin:0 0 4px;font-size:1.2em;}p{margin:0 0 12px;color:#aaa;font-size:0.85em;}"
+    ".sec{margin-top:18px;padding-top:14px;border-top:1px solid #333;}"
+    ".sec h3{margin:0 0 2px;font-size:0.95em;}"
+    ".sec p{margin:0 0 8px;}"
+    "label{display:block;font-size:0.8em;color:#aaa;margin:12px 0 4px;}"
+    "input{width:100%%;box-sizing:border-box;padding:10px;border-radius:6px;border:1px solid #444;background:#000;color:#fff;}"
+    "button{width:100%%;margin-top:18px;padding:12px;background:#0066cc;color:#fff;border:none;border-radius:8px;font-size:1em;cursor:pointer;}"
+    "a{color:#88f;font-size:0.85em;}"
+    "</style></head><body><form method='POST' action='/wifi'>"
+    "<h2>WiFi Setup</h2><p>Mode: %s &middot; IP: %s</p>"
+    "<div class='sec'><h3>Station</h3><p>Connect to your router. Filling SSID reboots into STA mode.</p>"
+    "<label>SSID</label><input name='ssid' maxlength='32' value='%s'>"
+    "<label>%s</label>"
+    "<input name='pass' type='password' maxlength='64' placeholder='&bull;&bull;&bull;&bull;&bull;&bull;'>"
+    "</div>"
+    "<div class='sec'><h3>Access Point</h3><p>This device's own hotspot (default XIAO-CAM).</p>"
+    "<label>SSID</label><input name='ap_ssid' maxlength='32' value='%s'>"
+    "<label>Password (min 8 chars, leave blank to keep current)</label>"
+    "<input name='ap_pass' type='password' maxlength='64' placeholder='&bull;&bull;&bull;&bull;&bull;&bull;'>"
+    "</div>"
+    "<button type='submit'>Save &amp; Reboot</button>"
+    "<p style='margin-top:14px;'><a href='/combined'>&larr; back to stream</a></p>"
+    "</form></body></html>",
+    apActive ? "AP" : "STA", ip, ssidEsc, staPassHint, apSsidEsc);
+  if (len < 0 || (size_t)len >= sizeof(page)) {
+    Serial.printf("wifi page truncated: need %d\n", len);
+  }
+
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_send(req, page, strlen(page));
+  return ESP_OK;
+}
+
+static void trimInPlace(char *s) {
+  size_t len = strlen(s);
+  while (len && (s[len - 1] == ' ' || s[len - 1] == '\t' || s[len - 1] == '\r' || s[len - 1] == '\n')) {
+    s[--len] = '\0';
+  }
+  size_t start = 0;
+  while (s[start] == ' ' || s[start] == '\t') start++;
+  if (start) memmove(s, s + start, len - start + 1);
+}
+
+static esp_err_t wifi_save_handler(httpd_req_t *req) {
+  char buf[768];
+  int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+  if (ret <= 0) {
+    Serial.printf("wifi_save: recv failed ret=%d\n", ret);
+    return ESP_FAIL;
+  }
+  buf[ret] = '\0';
+  while (ret > 0 && (buf[ret - 1] == '\r' || buf[ret - 1] == '\n' || buf[ret - 1] == ' ')) {
+    buf[--ret] = '\0';
+  }
+
+  char ssid[33] = "";
+  char pass[65] = "";
+  char apS[33] = "";
+  char apP[65] = "";
+  getFormValue(buf, "ssid", ssid, sizeof(ssid));
+  getFormValue(buf, "pass", pass, sizeof(pass));
+  getFormValue(buf, "ap_ssid", apS, sizeof(apS));
+  getFormValue(buf, "ap_pass", apP, sizeof(apP));
+  trimInPlace(ssid);
+  trimInPlace(pass);
+  trimInPlace(apS);
+  trimInPlace(apP);
+  Serial.printf("wifi_save rx: ssid=%u, pass=%u, ap_ssid=%u, ap_pass=%u chars\n",
+    strlen(ssid), strlen(pass), strlen(apS), strlen(apP));
+
+  size_t plen = strlen(pass);
+  size_t aplen = strlen(apP);
+  bool staProvided = ssid[0] != '\0';
+  bool apProvided = apS[0] != '\0' || aplen > 0;
+  if (!staProvided && !apProvided) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Nothing to save");
+    return ESP_FAIL;
+  }
+  if (plen > 0 && plen < 8) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Station password must be 8+ chars (or leave blank)");
+    return ESP_FAIL;
+  }
+  if (aplen > 0 && aplen < 8) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "AP password must be 8+ chars (or leave blank)");
+    return ESP_FAIL;
+  }
+
+  Preferences prefs;
+  prefs.begin("wifi_config", false);
+  if (staProvided) {
+    String existingPass = prefs.getString("pass", "");
+    if (plen == 0 && existingPass.length() == 0) {
+      prefs.end();
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Password required on first setup (no password stored yet)");
+      return ESP_FAIL;
+    }
+    prefs.putString("ssid", ssid);
+    if (plen > 0) prefs.putString("pass", pass);
+    prefs.putUChar("mode", 0); // MODE_STA - providing station credentials implies STA intent
+  }
+  if (apS[0]) prefs.putString("ap_ssid", apS);
+  if (aplen > 0) prefs.putString("ap_pass", apP);
+  prefs.end();
+
+  Serial.printf("WiFi saved: station ssid='%s' (%s), ap ssid='%s' (%s)\n",
+    staProvided ? ssid : "(kept)",
+    plen > 0 ? "pass updated" : (staProvided ? "pass kept" : "-"),
+    apS[0] ? apS : "(kept)",
+    aplen > 0 ? "pass updated" : "-");
+
+  static const char okPage[] =
+    "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+    "<meta http-equiv='refresh' content='4;url=/'>"
+    "</head><body style='font-family:sans-serif;background:#111;color:#fff;text-align:center;padding-top:20vh;'>"
+    "<h2>Saved &mdash; rebooting&hellip;</h2>"
+    "<p>If the connection fails, the device falls back to AP mode (XIAO-CAM) after 20s.</p>"
+    "</body></html>";
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, okPage, strlen(okPage));
+  delay(300);
+  ESP.restart();
+  return ESP_OK;
 }
 
 esp_err_t combined_page_handler(httpd_req_t *req) {
@@ -713,24 +1039,31 @@ esp_err_t combined_page_handler(httpd_req_t *req) {
     (ipAddr[2] & 0xFF), (ipAddr[3] & 0xFF));
 
   sensor_t *s = esp_camera_sensor_get();
-  const char *res_str = "Unknown";
-  if (s) {
-    res_str = framesize_to_str(s->status.framesize);
-  }
+  (void)s; // unused after removing resolution header
 
-  static char page[4096];
-  snprintf(page, sizeof(page),
+  const char* vidLabel = framesize_to_str(vidResList[currentVidResIdx]);
+  char audLabel[16];
+  snprintf(audLabel, sizeof(audLabel), "x%d", currentAudGain);
+
+  static char page[8192];
+  int pageLen = snprintf(page, sizeof(page),
     "<!DOCTYPE html><html lang='en'>"
-    "<head><meta charset='UTF-8'><title>XIAO ESP32S3 - Live Stream</title>"
+    "<head><meta charset='UTF-8'><meta name='build' content='20260827a'><title>XIAO ESP32S3 - Live Stream</title>"
     "<style>"
     "html,body{width:100%%;min-height:100%%;margin:0;padding:0;background:#111;color:#fff;overflow:hidden;}"
     "#app{display:flex;flex-direction:column;align-items:center;width:100%%;min-height:100%%;}"
     "h1{font-size:clamp(0.9em,3vw,1.4em);margin:4px 0;color:#fff;}"
-    ".res{font-size:0.75em;color:#888;margin:-2px 0 6px 0;}"
-    "#vid-wrap{max-width:640px;width:100%%;margin-bottom:16px;position:relative;}"
-    "#vid{width:100%%;height:auto;object-fit:contain;background:#000;}"
+    "#stage{display:flex;align-items:center;justify-content:center;gap:12px;width:100%%;margin-bottom:18px;}"
+    "#vid-wrap{position:relative;flex:1 1 auto;min-width:0;max-width:640px;}"
+    "#vid{width:100%%;height:auto;object-fit:contain;background:#000;display:block;}"
     ".reconnect-overlay{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);color:#fff;font-size:1.2em;z-index:10;pointer-events:none;}"
     ".reconnect-overlay.hidden{display:none;}"
+    ".quality-panel{display:flex;flex-direction:column;align-items:center;gap:7px;background:rgba(255,255,255,0.05);border-radius:10px;padding:11px 12px;flex:0 0 auto;}"
+    ".quality-label{font-size:0.72em;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;text-align:center;}"
+    ".quality-value{font-size:1em;font-weight:600;color:#fff;margin-top:2px;}"
+    ".quality-btn{background:#333;color:#fff;border:none;padding:9px 13px;font-size:1.15em;border-radius:7px;cursor:pointer;line-height:1;}"
+    ".quality-btn:hover{background:#444;}"
+    ".quality-btn:disabled{background:#222;color:#666;cursor:not-allowed;}"
     ".audio-wrap{width:95%%;max-width:640px;margin:16px 0;flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:24px;position:relative;}"
     ".audio-wrap audio{width:100%%;}"
     ".refresh-btn{background:#0066cc;color:#fff;border:none;padding:21px 48px;font-size:1.3em;border-radius:8px;cursor:pointer;font-weight:500;}"
@@ -740,11 +1073,25 @@ esp_err_t combined_page_handler(httpd_req_t *req) {
     "@media(orientation:landscape){html,body{overflow:auto;}}"
     "</style></head><body>"
     "<div id='app'>"
+    "<a href='/wifi' style='position:fixed;top:6px;right:10px;color:#7aa7ff;font-size:0.85em;text-decoration:none;background:rgba(255,255,255,0.06);padding:6px 10px;border-radius:8px;z-index:30;'>&#9881; WiFi</a>"
     "<h1>XIAO ESP32S3 - Live Stream</h1>"
-    "<div class='res'>Streaming: %s</div>"
-    "<div id='vid-wrap'>"
-    "  <img id='vid' src='http://%s:81/stream' style='background:#000;'>"
-    "  <div id='vid-reconnect' class='reconnect-overlay hidden'>Reconnecting video...</div>"
+    "<div id='stage'>"
+    "  <div class='quality-panel'>"
+    "    <div class='quality-label'>Video</div>"
+    "    <button class='quality-btn' id='vid-up' onclick='changeQuality(\"vid\",\"up\")' title='Higher resolution'>▲</button>"
+    "    <button class='quality-btn' id='vid-down' onclick='changeQuality(\"vid\",\"down\")' title='Lower resolution'>▼</button>"
+    "    <div class='quality-value' id='vid-val'>%s</div>"
+    "  </div>"
+    "  <div id='vid-wrap'>"
+    "    <img id='vid' src='http://%s:81/stream' style='background:#000;'>"
+    "    <div id='vid-reconnect' class='reconnect-overlay hidden'>Reconnecting video...</div>"
+    "  </div>"
+    "  <div class='quality-panel'>"
+    "    <div class='quality-label'>Audio</div>"
+    "    <button class='quality-btn' id='aud-up' onclick='changeQuality(\"aud\",\"up\")' title='Increase gain'>▲</button>"
+    "    <button class='quality-btn' id='aud-down' onclick='changeQuality(\"aud\",\"down\")' title='Decrease gain'>▼</button>"
+    "    <div class='quality-value' id='aud-val'>%s</div>"
+    "  </div>"
     "</div>"
     "<div class='audio-wrap'>"
     "  <audio id='audio' controls preload='none' src='http://%s:82/audio'></audio>"
@@ -787,12 +1134,54 @@ esp_err_t combined_page_handler(httpd_req_t *req) {
     "  aud.play().catch(()=>{});"
     "  setTimeout(()=>{btn.disabled=false; btn.textContent='Refresh'; hideOverlay('vid-reconnect'); hideOverlay('audio-reconnect');}, 10000);"
     "}"
+    "async function changeQuality(type, dir){"
+    "  const btnId = type + '-' + dir;"
+    "  const btn = document.getElementById(btnId);"
+    "  if(!btn) return;"
+    "  btn.disabled = true;"
+    "  btn.textContent = '...';"
+    "  try {"
+    "    if(type === 'vid') {"
+    "      const res = await fetch('/quality/vid', {"
+    "        method: 'POST',"
+    "        headers: {'Content-Type': 'application/json'},"
+    "        body: JSON.stringify({dir: dir})"
+    "      });"
+    "      await res.json();"
+    "      const v = document.getElementById('vid');"
+    "      v.src = v.src.split('?')[0] + '?t=' + Date.now();"
+    "    } else {"
+    "      const res = await fetch('/quality/aud', {"
+    "        method: 'POST',"
+    "        headers: {'Content-Type': 'application/json'},"
+    "        body: JSON.stringify({dir: dir})"
+    "      });"
+    "      const data = await res.json();"
+    "      document.getElementById('aud-val').textContent = 'x' + data.gain;"
+    "    }"
+    "    const q = await fetch('/quality');"
+    "    const qd = await q.json();"
+    "    document.getElementById('vid-val').textContent = qd.vid_label;"
+    "    document.getElementById('aud-val').textContent = qd.aud_label;"
+    "  } catch(e) {"
+    "    document.getElementById(type === 'vid' ? 'vid-val' : 'aud-val').textContent = 'ERR';"
+    "    console.error('Quality change failed:', e);"
+    "  } finally {"
+    "    btn.disabled = false;"
+    "    btn.textContent = dir === 'up' ? '▲' : '▼';"
+    "  }"
+    "}"
     "initStreams();"
     "</script>"
-    "</body></html>", res_str, ip, ip, ip, ip, ip);
+    "</body></html>", vidLabel, ip, audLabel, ip, ip, ip);
+  if (pageLen < 0 || (size_t)pageLen >= sizeof(page)) {
+    Serial.printf("Combined page truncated: need %d bytes\n", pageLen);
+  }
 
   httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
+  httpd_resp_set_hdr(req, "Pragma", "no-cache");
   return httpd_resp_send(req, page, strlen(page));
 }
 
@@ -831,6 +1220,41 @@ void startCameraServer() {
     .uri        = "/combined",
     .method     = HTTP_GET,
     .handler    = combined_page_handler,
+    .user_ctx   = NULL
+  };
+
+  httpd_uri_t quality_get_uri = {
+    .uri        = "/quality",
+    .method     = HTTP_GET,
+    .handler    = quality_get_handler,
+    .user_ctx   = NULL
+  };
+
+  httpd_uri_t quality_vid_uri = {
+    .uri        = "/quality/vid",
+    .method     = HTTP_POST,
+    .handler    = quality_vid_handler,
+    .user_ctx   = NULL
+  };
+
+  httpd_uri_t quality_aud_uri = {
+    .uri        = "/quality/aud",
+    .method     = HTTP_POST,
+    .handler    = quality_aud_handler,
+    .user_ctx   = NULL
+  };
+
+  httpd_uri_t wifi_get_uri = {
+    .uri        = "/wifi",
+    .method     = HTTP_GET,
+    .handler    = wifi_page_handler,
+    .user_ctx   = NULL
+  };
+
+  httpd_uri_t wifi_post_uri = {
+    .uri        = "/wifi",
+    .method     = HTTP_POST,
+    .handler    = wifi_save_handler,
     .user_ctx   = NULL
   };
 
@@ -952,6 +1376,11 @@ void startCameraServer() {
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
     httpd_register_uri_handler(camera_httpd, &combined_uri);
+    httpd_register_uri_handler(camera_httpd, &quality_get_uri);
+    httpd_register_uri_handler(camera_httpd, &quality_vid_uri);
+    httpd_register_uri_handler(camera_httpd, &quality_aud_uri);
+    httpd_register_uri_handler(camera_httpd, &wifi_get_uri);
+    httpd_register_uri_handler(camera_httpd, &wifi_post_uri);
     // httpd_register_uri_handler(camera_httpd, &cmd_uri);
     // httpd_register_uri_handler(camera_httpd, &status_uri);
     // httpd_register_uri_handler(camera_httpd, &capture_uri);

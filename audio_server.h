@@ -18,8 +18,8 @@ static const int bitsPerSample = SAMPLE_BITS;
 static const int numChannels = 1;
 static const int bufferSize = DMA_BUF_LEN;
 
-// Digital gain multiplier (1 = unity, 2-8 = boost). Start with 4.
-static const int AUDIO_GAIN = 4;
+// Digital gain multiplier (1 = unity, 2-8 = boost). Range 1-8, default 4.
+extern int currentAudGain;
 
 struct WAVHeader {
   char chunkId[4];
@@ -92,7 +92,7 @@ inline void handleAudioStream() {
       int16_t* samples = reinterpret_cast<int16_t*>(buffer);
       int sampleCount = bytesRead / sizeof(int16_t);
       for (int i = 0; i < sampleCount; i++) {
-        int32_t amplified = (int32_t)samples[i] * AUDIO_GAIN;
+        int32_t amplified = (int32_t)samples[i] * currentAudGain;
         if (amplified > 32767) amplified = 32767;
         else if (amplified < -32768) amplified = -32768;
         samples[i] = (int16_t)amplified;

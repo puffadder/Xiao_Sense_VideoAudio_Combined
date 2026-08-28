@@ -66,12 +66,15 @@ The device supports **two WiFi modes** stored in non-volatile memory (NVS):
 
 ### 2. Configure WiFi
 
-Edit `Xiao_Sense_CameraWebServer_Audio.ino` and set your credentials:
+Credentials are **not** stored in the source code. On first boot — or whenever a saved connection fails — the device starts its own access point:
 
-```cpp
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
-```
+1. Connect to WiFi network **XIAO-CAM** (default password `12345678`).
+2. Open `http://192.168.4.1/wifi`.
+3. Fill in the **Station** section (your router's SSID + password) → **Save & Reboot**. Credentials persist in NVS.
+
+The setup page also has an **Access Point** section to rename the device's own hotspot and change its password (defaults: `XIAO-CAM` / `12345678`). Station and AP credentials are stored independently, so toggling modes never requires re-entering the other mode's credentials.
+
+Reconfigure anytime via the **⚙ WiFi** link on the stream page (`http://<device-ip>/wifi`), or at `http://192.168.4.1/wifi` while in AP mode. If a saved STA connection fails for 20 s, the device automatically falls back to AP mode so you can retry. The BOOT button still toggles STA/AP.
 
 ### 3. Upload
 
